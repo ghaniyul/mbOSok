@@ -625,14 +625,7 @@ static void cmd_help(void) {
     out_str("  mv <src> <dst>    move / rename file or folder\n");
     out_str("  find <name>       search the whole filesystem\n");
     out_str("  grep <pat> [f]    search a pattern in a file or pipeline\n");
-    out_str("\nProcess management:\n");
-    out_str("  exec <name> [a..] run an executable (PATH aware, optional &)\n");
-    out_str("  ps                list processes\n");
-    out_str("  kill <pid>        terminate a process\n");
-    out_str("  env               print environment variables\n");
-    out_str("  export PATH <v>   set PATH (persisted to /path.cfg)\n");
-    out_str("\nExternal commands found through PATH are also executable by name,\n");
-    out_str("e.g. hello, clock, echo. Pipelines are supported, e.g. ls | grep txt\n");
+    out_str("\nPipelines are supported, e.g. ls | grep txt\n");
 }
 
 static void cmd_ls(void) {
@@ -1182,7 +1175,7 @@ int main(int argc, char **argv) {
     syscall(SYS_ACTIVATE_KB, 0, 0, 0);
     syscall(SYS_CLEAR_SCREEN, 0, 0, 0);
 
-    syscall(SYS_PUTS, (uint32_t) "mbOSok shell (Milestone 4)\n", 27, 0xA);
+    syscall(SYS_PUTS, (uint32_t) "mbOSok shell (Milestone 3)\n", 27, 0xA);
     syscall(SYS_PUTS, (uint32_t) "Type 'help' for a list of commands.\n\n", 37, 0xF);
 
     path_load();

@@ -6,12 +6,11 @@
  * Kept in one place so the kernel dispatcher and all user programs agree.
  *
  * Convention: eax = service, ebx/ecx/edx = arguments (or pointers).
- * The kernel returns a value in eax for the services that need one.
+ * Results come back through pointer arguments. eax is 0, or -1 for a
+ * service the kernel does not implement.
  *
- * SYS_WRITE_AT: ebx = (row << 8) | col, ecx = char* buffer,
- *               edx = (color << 8) | length
- * Writes directly at a screen position without moving the text cursor,
- * which lets background programs (clock) display without disturbing others.
+ * Services 10-14, 17 and 18 are reserved for Milestone 4 and are not
+ * implemented by the M3 kernel.
  */
 
 #define SYS_READ          0

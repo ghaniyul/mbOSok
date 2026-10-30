@@ -4,8 +4,8 @@ global isr_stub_table
 ; Generic handler section for interrupt
 call_generic_handler:
     ; Expected stack state at this label
-    ; [esp + 20] ss  (Only for inter-privilege)
-    ; [esp + 16] esp (Only for inter-privilege)
+    ; [esp + 24] ss  (Only for inter-privilege)
+    ; [esp + 20] esp (Only for inter-privilege)
     ; [esp + 16] eflags
     ; [esp + 12] cs
     ; [esp + 8 ] eip
@@ -78,12 +78,11 @@ segment_register_setup:
 
 ; Macro for creating interrupt handler that only push interrupt number
 ; Stack will have these value that pushed automatically by CPU
-; [esp + 20] ss  (Only for inter-privilege)
-; [esp + 16] esp (Only for inter-privilege)
-; [esp + 12] eflags
-; [esp + 8 ] cs
-; [esp + 4 ] eip
-; [esp + 0 ] error code
+; [esp + 16] ss  (Only for inter-privilege)
+; [esp + 12] esp (Only for inter-privilege)
+; [esp + 8 ] eflags
+; [esp + 4 ] cs
+; [esp + 0 ] eip
 %macro no_error_code_interrupt_handler 1
 interrupt_handler_%1:
     push    dword 0                 ; push 0 as error code

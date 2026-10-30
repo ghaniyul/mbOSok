@@ -2,10 +2,8 @@
  * mbOSok shell: a ring-3 user program that only talks to the kernel through
  * the INT 0x30 syscall interface.
  *
- * Milestone 4 additions:
- *   - exec / ps / kill process management commands,
- *   - PATH environment variable with persistence (export / env),
- *   - external commands resolved through PATH (separate shell commands).
+ * The exec / ps / kill / PATH code is kept for Milestone 4. It needs
+ * syscalls the M3 kernel does not implement yet, so those commands fail.
  */
 
 #include <stdint.h>
@@ -590,10 +588,11 @@ static int8_t copy_tree(uint32_t src_inode, uint32_t dst_parent, const char *dst
     return 0;
 }
 
-static int8_t remove_tree(uint32_t inode, uint32_t parent_inode, const char *name, uint8_t file_type) {
+static int8_t remove_tree(uint32_t inode, uint32_t parent_inode, const char *name, uint8_t file_type, uint32_t depth) {
     if (file_type != EXT2_FT_DIR) {
         return delete_entry(name, parent_inode, false);
     }
+    if (depth > TREE_MAX_DEPTH) return -1;
     if (load_directory(inode) != 0) return -1;
 
     struct child_info children[TREE_MAX_CHILDREN];
@@ -601,7 +600,7 @@ static int8_t remove_tree(uint32_t inode, uint32_t parent_inode, const char *nam
     collect_children(children, &child_count);
 
     for (uint32_t i = 0; i < child_count; i++) {
-        if (remove_tree(children[i].inode, inode, children[i].name, children[i].file_type) != 0)
+        if (remove_tree(children[i].inode, inode, children[i].name, children[i].file_type, depth + 1) != 0)
             return -1;
     }
     return delete_entry(name, parent_inode, true);
@@ -764,7 +763,7 @@ static void cmd_rm(const char *name) {
         print_error("rm: not found: ", name);
         return;
     }
-    if (remove_tree(inode, cwd_inode, name, type) != 0)
+    if (remove_tree(inode, cwd_inode, name, type, 0) != 0)
         print_error("rm: failed: ", name);
 }
 
@@ -784,7 +783,7 @@ static void cmd_mv(const char *src, const char *dst) {
         return;
     }
     if (type == EXT2_FT_DIR) {
-        if (copy_tree(inode, cwd_inode, dst, 0) != 0 || remove_tree(inode, cwd_inode, src, type) != 0)
+        if (copy_tree(inode, cwd_inode, dst, 0) != 0 || remove_tree(inode, cwd_inode, src, type, 0) != 0)
             print_error("mv: failed: ", src);
         return;
     }

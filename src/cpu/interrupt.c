@@ -15,7 +15,7 @@ void set_tss_kernel_current_stack(void) {
     uint32_t stack_ptr;
     // Reading base stack frame instead esp
     __asm__ volatile ("mov %%ebp, %0": "=r"(stack_ptr) : /* <Empty> */);
-    // Add 8 because 4 for ret address and other 4 is for the local variable
+    // +8 skips saved ebp and return address, so esp0 = caller esp before the call
     _interrupt_tss_entry.esp0 = stack_ptr + 8;
 }
 
@@ -59,19 +59,25 @@ void activate_keyboard_interrupt(void) {
 
 /* -- Syscall helpers -- */
 
+// The whole range [ptr, ptr + len) must lie below the kernel base
+static bool is_user_range(const void *ptr, uint32_t len) {
+    uint32_t start = (uint32_t) ptr;
+    return ptr != NULL && start < KERNEL_VIRTUAL_ADDRESS_BASE && len <= KERNEL_VIRTUAL_ADDRESS_BASE - start;
+}
+
 static bool is_user_pointer(const void *ptr) {
-    return ptr != NULL && (uint32_t) ptr < KERNEL_VIRTUAL_ADDRESS_BASE;
+    return is_user_range(ptr, sizeof(uint32_t));
 }
 
 static bool is_valid_fs_request(const struct EXT2DriverRequest *request, bool name_optional, bool need_buffer) {
-    if (!is_user_pointer(request)) return false;
+    if (!is_user_range(request, sizeof(*request))) return false;
     if (request->parent_inode == 0) return false;
     if (request->name != NULL) {
-        if (!is_user_pointer(request->name) || request->name_len == 0) return false;
+        if (request->name_len == 0 || !is_user_range(request->name, request->name_len)) return false;
     } else if (!name_optional) {
         return false;
     }
-    if (need_buffer && !is_user_pointer(request->buf)) return false;
+    if (need_buffer && !is_user_range(request->buf, request->buffer_size)) return false;
     return true;
 }
 
@@ -113,7 +119,8 @@ void syscall(struct InterruptFrame *frame) {
         }
         case SYS_WRITE: {
             if (!is_valid_fs_request(request, false, false)) break;
-            if (!request->is_directory && request->buffer_size > 0 && !is_user_pointer(request->buf)) break;
+            if (!request->is_directory && request->buffer_size > 0 &&
+                !is_user_range(request->buf, request->buffer_size)) break;
             if (!is_user_pointer((void *) frame->cpu.general.ecx)) break;
             *((int8_t *) frame->cpu.general.ecx) = write(request);
             break;
@@ -132,7 +139,7 @@ void syscall(struct InterruptFrame *frame) {
             framebuffer_putchar((char) frame->cpu.general.ebx, (uint8_t) frame->cpu.general.ecx);
             break;
         case SYS_PUTS:
-            if (is_user_pointer((void *) frame->cpu.general.ebx))
+            if (is_user_range((void *) frame->cpu.general.ebx, frame->cpu.general.ecx))
                 framebuffer_puts(
                     (char *) frame->cpu.general.ebx,
                     frame->cpu.general.ecx,
@@ -167,6 +174,8 @@ void syscall(struct InterruptFrame *frame) {
             break;
         }
         default:
+            // Not implemented in M3 (exec/ps/kill/...)
+            frame->cpu.general.eax = (uint32_t) -1;
             break;
     }
 }
@@ -219,6 +228,8 @@ void main_interrupt_handler(struct InterruptFrame *frame) {
             syscall(frame);
             break;
         default:
+            // Any other CPU exception: halt with a message instead of looping on iret
+            if (frame->int_number < 32) halt_with_fault("CPU EXCEPTION", frame);
             break;
     }
 }

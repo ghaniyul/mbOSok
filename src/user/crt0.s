@@ -2,18 +2,13 @@ global _start
 extern main
 
 ; Process entrypoint.
-; On entry the kernel-provided user stack follows the cdecl main() layout:
-;   [esp]            = argc
-;   [esp+4]          = pointer to argv[0]
-;   [esp+8]          = argv[0]
-;   [esp+12]         = argv[1]
-;   ...
+; The M3 kernel does not push argc/argv, main() must not use them.
 section .text
 _start:
     mov ebp, esp
     call main
 
-    ; Terminate the process after main() returns (exit syscall = 10)
+    ; Exit syscall (10) is Milestone 4, unreachable in M3 since main never returns
     mov ebx, eax
     mov eax, 10
     int 0x30

@@ -10,7 +10,8 @@
 #include "header/memory/paging.h"
 
 #define SHELL_PARENT_INODE 1u          // root inode in EXT2 IF2130 Edition
-#define SHELL_MAX_SIZE     0x100000u   // 1 MiB
+#define SHELL_MAX_SIZE     0x100000u   // 1 MiB, same limit as user-linker.ld
+#define USER_STACK_PAGES   16u         // 64 KiB, recursive cp/rm in the shell needs room
 
 static void print(const char *s) {
     uint32_t count = 0;
@@ -40,11 +41,11 @@ void kernel_setup(void) {
 
     print("mbOSok M3: loading shell into user mode (Ring 3)...\n");
 
-    // 1. Allocate 4 page frames for user stack (0x3FC000 - 0x3FFFFF)
-    for (uint32_t i = 0; i < 4; i++) {
+    // 1. Allocate page frames for user stack, right below 0x400000
+    for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         paging_allocate_user_page_frame(
             &_paging_kernel_page_directory,
-            (void *) (0x3FC000 + i * PAGE_FRAME_SIZE)
+            (void *) (0x400000 - (i + 1) * PAGE_FRAME_SIZE)
         );
     }
 
@@ -52,6 +53,10 @@ void kernel_setup(void) {
     uint32_t file_size = 0;
     if (get_file_size("shell", 5, SHELL_PARENT_INODE, &file_size) != 0 || file_size == 0) {
         print("Error: Failed to find shell binary on disk! (run 'make prepare')\n");
+        while (true) __asm__ volatile("hlt");
+    }
+    if (file_size > SHELL_MAX_SIZE) {
+        print("Error: Shell binary is larger than 1 MiB!\n");
         while (true) __asm__ volatile("hlt");
     }
 

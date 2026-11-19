@@ -446,10 +446,14 @@ static void fb_print_decimal(uint32_t value) {
  * Handle a CPU exception. A fault raised by a user process only terminates
  * that process, the rest of the system keeps running. A fault raised by the
  * kernel itself is fatal.
+ *
+ * @param on_behalf_of_process The kernel faulted while serving the running
+ *                             process, e.g. a system call got a bad pointer
  */
-static void handle_cpu_exception(const char *name, struct InterruptFrame *frame) {
+static void handle_cpu_exception(const char *name, struct InterruptFrame *frame, bool on_behalf_of_process) {
     struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
-    if (!is_from_user_mode(frame) || current_pcb == NULL) halt_with_fault(name, frame);
+    bool is_process_fault = is_from_user_mode(frame) || on_behalf_of_process;
+    if (!is_process_fault || current_pcb == NULL) halt_with_fault(name, frame);
 
     framebuffer_putchar('\n', 0x0C);
     fb_print(current_pcb->metadata.name);
@@ -497,7 +501,7 @@ void main_interrupt_handler(struct InterruptFrame *frame) {
             if (keyboard_consume_interrupt_request()) interrupt_foreground_process();
             break;
         case 0x0D:
-            handle_cpu_exception("GENERAL PROTECTION FAULT", frame);
+            handle_cpu_exception("GENERAL PROTECTION FAULT", frame, false);
             break;
         case 0x0E: {
             uint32_t cr2;
@@ -505,7 +509,9 @@ void main_interrupt_handler(struct InterruptFrame *frame) {
             framebuffer_putchar('\n', 0x0C);
             fb_print("PAGE FAULT at 0x");
             fb_print_hex(cr2);
-            handle_cpu_exception("PAGE FAULT", frame);
+            // A kernel-mode fault on a user address comes from a system call
+            // that was handed an unmapped pointer: blame the calling process
+            handle_cpu_exception("PAGE FAULT", frame, cr2 < KERNEL_VIRTUAL_ADDRESS_BASE);
             break;
         }
         case 0x30:
@@ -513,7 +519,7 @@ void main_interrupt_handler(struct InterruptFrame *frame) {
             break;
         default:
             // Any other CPU exception: never return with iret to the faulting instruction
-            if (frame->int_number < 32) handle_cpu_exception("CPU EXCEPTION", frame);
+            if (frame->int_number < 32) handle_cpu_exception("CPU EXCEPTION", frame, false);
             break;
     }
 }

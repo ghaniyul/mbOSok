@@ -9,8 +9,7 @@
 #include "header/filesystem/ext2.h"
 #include "header/memory/paging.h"
 #include "header/process/process.h"
-
-#define SHELL_PARENT_INODE 1u          // root inode in EXT2 IF2130 Edition
+#include "header/process/scheduler.h"
 
 static void print(const char *s) {
     uint32_t count = 0;
@@ -38,21 +37,11 @@ void kernel_setup(void) {
     gdt_install_tss();
     set_tss_register();
 
-    // Chapter 4: the shell is the init process, loaded from the EXT2 root directory
-    struct EXT2DriverRequest request = {
-        .buf          = (void *) 0,
-        .name         = "shell",
-        .name_len     = 5,
-        .parent_inode = SHELL_PARENT_INODE,
-        .buffer_size  = PROCESS_EXECUTABLE_SIZE_MAX,
-        .is_directory = false,
-    };
-
     // Set TSS.esp0 for interprivilege interrupt
     set_tss_kernel_current_stack();
 
-    // Create & execute process 0
-    int32_t retcode = process_create_user_process(request);
+    // Chapter 4: the shell is the init process, loaded from the EXT2 root directory
+    int32_t retcode = process_create_init_process();
     if (retcode != PROCESS_CREATE_SUCCESS) {
         if (retcode == PROCESS_CREATE_FAIL_FS_READ_FAILURE)
             print("Error: Failed to load shell binary from disk! (run 'make prepare')\n");
@@ -60,8 +49,8 @@ void kernel_setup(void) {
             print("Error: Failed to create the init process!\n");
         while (true) __asm__ volatile("hlt");
     }
-    paging_use_page_directory(_process_list[0].context.page_directory_virtual_addr);
-    kernel_execute_user_program((void *) 0x0);
 
-    while (true) __asm__ volatile("hlt");
+    // Chapter 4: start the preemptive scheduler and jump into the init process
+    scheduler_init();
+    scheduler_switch_to_next_process();
 }

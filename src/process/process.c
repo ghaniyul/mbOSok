@@ -240,6 +240,18 @@ int32_t process_create_user_process(struct EXT2DriverRequest request) {
     return process_create_user_process_with_args(request, NULL, NULL);
 }
 
+int32_t process_create_init_process(void) {
+    struct EXT2DriverRequest request = {
+        .buf          = (void *) 0,
+        .name         = PROCESS_INIT_NAME,
+        .name_len     = sizeof(PROCESS_INIT_NAME) - 1,
+        .parent_inode = PROCESS_INIT_PARENT_INODE,
+        .buffer_size  = PROCESS_EXECUTABLE_SIZE_MAX,
+        .is_directory = false,
+    };
+    return process_create_user_process(request);
+}
+
 bool process_destroy(uint32_t pid) {
     struct ProcessControlBlock *pcb = process_get_pcb_by_pid(pid);
     if (pcb == NULL) return false;

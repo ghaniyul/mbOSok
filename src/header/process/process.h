@@ -77,6 +77,10 @@
 // PID 0 is never handed out, it means "no process"
 #define PROCESS_PID_NONE                         0
 
+// Init process: the shell, stored in the root directory (inode 1) of the file system
+#define PROCESS_INIT_NAME                        "shell"
+#define PROCESS_INIT_PARENT_INODE                1u
+
 /**
  * Contain information needed for task to be able to get interrupted and resumed later
  *
@@ -189,6 +193,14 @@ int32_t process_create_user_process_with_args(
     const struct ProcessArguments *args,
     uint32_t *pid_out
 );
+
+/**
+ * Create the init process (the shell). Called once at boot, and again by
+ * the scheduler whenever no process is left in the system.
+ *
+ * @return Process creation return code
+ */
+int32_t process_create_init_process(void);
 
 /**
  * Destroy process then release page directory and process control block

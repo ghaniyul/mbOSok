@@ -32,8 +32,10 @@ call_generic_handler:
     jz  segment_register_setup   ; We will skip the esp manipulation if it's intraprivilege
 
 interprivilege_interrupt:
-    ; Interprivilege interrupt branch, get the esp from x86 interrupt stack
-    mov eax, [esp+76] 
+    ; Interprivilege interrupt branch, get the esp from x86 interrupt stack.
+    ; Kit correction (Chapter 4.1.0): CPURegister.stack.esp must carry the
+    ; interrupted user esp, because the scheduler saves it into the context.
+    mov eax, [esp+76]
     mov [esp+20], eax
 
 segment_register_setup:
@@ -78,11 +80,12 @@ segment_register_setup:
 
 ; Macro for creating interrupt handler that only push interrupt number
 ; Stack will have these value that pushed automatically by CPU
-; [esp + 16] ss  (Only for inter-privilege)
-; [esp + 12] esp (Only for inter-privilege)
-; [esp + 8 ] eflags
-; [esp + 4 ] cs
-; [esp + 0 ] eip
+; [esp + 20] ss  (Only for inter-privilege)
+; [esp + 16] esp (Only for inter-privilege)
+; [esp + 12] eflags
+; [esp + 8 ] cs
+; [esp + 4 ] eip
+; [esp + 0 ] error code
 %macro no_error_code_interrupt_handler 1
 interrupt_handler_%1:
     push    dword 0                 ; push 0 as error code

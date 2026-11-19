@@ -62,9 +62,12 @@
 
 /**
  * CPURegister, store CPU registers values.
+ * Layout follows the kit correction of Chapter 4.1.0 and matches the push
+ * order of intsetup.s (pushad, then segment registers).
  * 
  * @param index   CPU index register (di, si)
- * @param stack   CPU stack register (bp, sp)
+ * @param stack   CPU stack register (bp, sp), on inter-privilege interrupt
+ *                esp is the interrupted user stack pointer
  * @param general CPU general purpose register (a, b, c, d)
  * @param segment CPU extra segment register (gs, fs, es, ds)
  */

@@ -1,6 +1,7 @@
 #include "header/cpu/interrupt.h"
 #include "header/cpu/gdt.h"
 #include "header/cpu/portio.h"
+#include "header/driver/cmos.h"
 #include "header/driver/keyboard.h"
 #include "header/filesystem/ext2.h"
 #include "header/memory/paging.h"
@@ -257,9 +258,13 @@ static int32_t syscall_exec(struct InterruptFrame *frame) {
  * | 11  | exec()                 | char* absolute path      | char** argv    | background |
  * | 12  | kill()                 | pid                      | -              | -          |
  * | 13  | ps()                   | char* buffer             | buffer size    | -          |
+ * | 14  | CMOS get time          | struct Time* out         | -              | -          |
  * | 15  | set text cursor        | row                      | col            | -          |
  * | 16  | get text cursor        | uint8_t* row             | uint8_t* col   | -          |
  * | 17  | getpid()               | -                        | -              | -          |
+ * | 18  | write text at position | char* buffer             | char count     | position   |
+ *
+ * Service 18 packs its position into edx: row | col << 8 | color << 16.
  *
  * Return value in eax: exec -> new pid or -1, kill -> 1 when a process was
  * terminated, ps -> process count, getpid -> pid of the caller.
@@ -370,6 +375,25 @@ void syscall(struct InterruptFrame *frame) {
         case SYS_GETPID: {
             struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
             if (current_pcb != NULL) frame->cpu.general.eax = current_pcb->metadata.pid;
+            break;
+        }
+        case SYS_GET_TIME: {
+            struct Time *time_out = (struct Time *) frame->cpu.general.ebx;
+            if (!is_user_range(time_out, sizeof(struct Time))) break;
+            cmos_read_time(time_out);
+            break;
+        }
+        case SYS_WRITE_AT: {
+            // Write text at a fixed screen position, the text cursor does not move
+            const char *text  = (const char *) frame->cpu.general.ebx;
+            uint32_t   count  = frame->cpu.general.ecx;
+            uint32_t   row    = frame->cpu.general.edx & 0xFF;
+            uint32_t   col    = (frame->cpu.general.edx >> 8) & 0xFF;
+            uint8_t    color  = (uint8_t) ((frame->cpu.general.edx >> 16) & 0xFF);
+            if (!is_user_range(text, count) || row >= FRAMEBUFFER_HEIGHT) break;
+            for (uint32_t i = 0; i < count && col + i < FRAMEBUFFER_WIDTH; i++) {
+                framebuffer_write((uint8_t) row, (uint8_t) (col + i), text[i], color & 0x0F, color >> 4);
+            }
             break;
         }
         default:

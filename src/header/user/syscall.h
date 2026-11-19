@@ -1,6 +1,8 @@
 #ifndef _USER_SYSCALL_H
 #define _USER_SYSCALL_H
 
+#include <stdint.h>
+
 /*
  * Shared system call numbers for INT 0x30.
  * Kept in one place so the kernel dispatcher and all user programs agree.
@@ -17,8 +19,16 @@
  *   SYS_PS     (ebx = text buffer, ecx = buffer size)  process count
  *   SYS_GETPID                                         pid of the caller
  *
- * Services 14 and 18 are reserved for the clock program.
+ * Services used by the clock program:
+ *   SYS_GET_TIME (ebx = struct Time*, see header/driver/cmos.h)
+ *   SYS_WRITE_AT (ebx = text, ecx = length, edx = SYS_WRITE_AT_POSITION(...))
+ *                write text at a screen position without moving the cursor
  */
+
+// Pack row, column and color attribute (background << 4 | foreground) for SYS_WRITE_AT
+#define SYS_WRITE_AT_POSITION(row, col, color) \
+    ((uint32_t) (row) | ((uint32_t) (col) << 8) | ((uint32_t) (color) << 16))
+
 
 #define SYS_READ          0
 #define SYS_READ_DIR      1

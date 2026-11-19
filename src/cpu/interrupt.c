@@ -187,8 +187,15 @@ void syscall(struct InterruptFrame *frame) {
             framebuffer_get_cursor(row_out, col_out);
             break;
         }
+        case SYS_EXIT: {
+            // Terminate the calling process, ebx (exit code of main) is not used.
+            // The process is gone, so this syscall never returns to user mode.
+            struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+            if (current_pcb != NULL) process_destroy(current_pcb->metadata.pid);
+            scheduler_switch_to_next_process();
+        }
         default:
-            // Not implemented in M3 (exec/ps/kill/...)
+            // Unknown service
             frame->cpu.general.eax = (uint32_t) -1;
             break;
     }
@@ -243,6 +250,39 @@ static struct Context context_from_frame(const struct InterruptFrame *frame) {
     return ctx;
 }
 
+static void fb_print_decimal(uint32_t value) {
+    char buffer[10];
+    uint32_t digits = 0;
+    do {
+        buffer[digits++] = (char) ('0' + value % 10);
+        value /= 10;
+    } while (value > 0);
+    while (digits > 0) framebuffer_putchar(buffer[--digits], 0x0C);
+}
+
+/**
+ * Handle a CPU exception. A fault raised by a user process only terminates
+ * that process, the rest of the system keeps running. A fault raised by the
+ * kernel itself is fatal.
+ */
+static void handle_cpu_exception(const char *name, struct InterruptFrame *frame) {
+    struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+    if (!is_from_user_mode(frame) || current_pcb == NULL) halt_with_fault(name, frame);
+
+    framebuffer_putchar('\n', 0x0C);
+    fb_print(current_pcb->metadata.name);
+    fb_print(" (pid ");
+    fb_print_decimal(current_pcb->metadata.pid);
+    fb_print(") terminated: ");
+    fb_print(name);
+    fb_print(" eip=0x");
+    fb_print_hex(frame->int_stack.eip);
+    framebuffer_putchar('\n', 0x0C);
+
+    process_destroy(current_pcb->metadata.pid);
+    scheduler_switch_to_next_process();
+}
+
 void main_interrupt_handler(struct InterruptFrame *frame) {
     switch (frame->int_number) {
         case PIC1_OFFSET + IRQ_TIMER:
@@ -257,21 +297,23 @@ void main_interrupt_handler(struct InterruptFrame *frame) {
             keyboard_isr();
             break;
         case 0x0D:
-            halt_with_fault("GENERAL PROTECTION FAULT", frame);
+            handle_cpu_exception("GENERAL PROTECTION FAULT", frame);
+            break;
         case 0x0E: {
             uint32_t cr2;
             __asm__ volatile("mov %%cr2, %0" : "=r"(cr2) : /* <Empty> */);
             framebuffer_putchar('\n', 0x0C);
             fb_print("PAGE FAULT at 0x");
             fb_print_hex(cr2);
-            halt_with_fault("", frame);
+            handle_cpu_exception("PAGE FAULT", frame);
+            break;
         }
         case 0x30:
             syscall(frame);
             break;
         default:
-            // Any other CPU exception: halt with a message instead of looping on iret
-            if (frame->int_number < 32) halt_with_fault("CPU EXCEPTION", frame);
+            // Any other CPU exception: never return with iret to the faulting instruction
+            if (frame->int_number < 32) handle_cpu_exception("CPU EXCEPTION", frame);
             break;
     }
 }

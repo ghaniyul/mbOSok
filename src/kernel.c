@@ -8,10 +8,9 @@
 #include "header/driver/keyboard.h"
 #include "header/filesystem/ext2.h"
 #include "header/memory/paging.h"
+#include "header/process/process.h"
 
 #define SHELL_PARENT_INODE 1u          // root inode in EXT2 IF2130 Edition
-#define SHELL_MAX_SIZE     0x100000u   // 1 MiB, same limit as user-linker.ld
-#define USER_STACK_PAGES   16u         // 64 KiB, recursive cp/rm in the shell needs room
 
 static void print(const char *s) {
     uint32_t count = 0;
@@ -39,56 +38,29 @@ void kernel_setup(void) {
     gdt_install_tss();
     set_tss_register();
 
-    print("mbOSok M3: loading shell into user mode (Ring 3)...\n");
-
-    // 1. Allocate page frames for user stack, right below 0x400000
-    for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
-        paging_allocate_user_page_frame(
-            &_paging_kernel_page_directory,
-            (void *) (0x400000 - (i + 1) * PAGE_FRAME_SIZE)
-        );
-    }
-
-    // 2. Query shell binary size from EXT2 disk
-    uint32_t file_size = 0;
-    if (get_file_size("shell", 5, SHELL_PARENT_INODE, &file_size) != 0 || file_size == 0) {
-        print("Error: Failed to find shell binary on disk! (run 'make prepare')\n");
-        while (true) __asm__ volatile("hlt");
-    }
-    if (file_size > SHELL_MAX_SIZE) {
-        print("Error: Shell binary is larger than 1 MiB!\n");
-        while (true) __asm__ volatile("hlt");
-    }
-
-    // 3. Allocate page frames for shell executable image starting at virtual 0x0
-    uint32_t code_frame_count = (file_size + PAGE_FRAME_SIZE - 1) / PAGE_FRAME_SIZE;
-    for (uint32_t i = 0; i < code_frame_count; i++) {
-        paging_allocate_user_page_frame(
-            &_paging_kernel_page_directory,
-            (void *) (i * PAGE_FRAME_SIZE)
-        );
-    }
-
-    // 4. Load shell binary directly into virtual address 0x0
+    // Chapter 4: the shell is the init process, loaded from the EXT2 root directory
     struct EXT2DriverRequest request = {
         .buf          = (void *) 0,
         .name         = "shell",
         .name_len     = 5,
         .parent_inode = SHELL_PARENT_INODE,
-        .buffer_size  = file_size,
+        .buffer_size  = PROCESS_EXECUTABLE_SIZE_MAX,
         .is_directory = false,
     };
-    if (read(request) != 0) {
-        print("Error: Failed to read shell binary into memory!\n");
-        while (true) __asm__ volatile("hlt");
-    }
 
-    // 5. Setup TSS esp0 kernel stack pointer for inter-privilege syscalls/interrupts
+    // Set TSS.esp0 for interprivilege interrupt
     set_tss_kernel_current_stack();
 
-    print("Transitioning to User Mode...\n");
-
-    // 6. Execute shell in user mode (Ring 3) via iret technique
+    // Create & execute process 0
+    int32_t retcode = process_create_user_process(request);
+    if (retcode != PROCESS_CREATE_SUCCESS) {
+        if (retcode == PROCESS_CREATE_FAIL_FS_READ_FAILURE)
+            print("Error: Failed to load shell binary from disk! (run 'make prepare')\n");
+        else
+            print("Error: Failed to create the init process!\n");
+        while (true) __asm__ volatile("hlt");
+    }
+    paging_use_page_directory(_process_list[0].context.page_directory_virtual_addr);
     kernel_execute_user_program((void *) 0x0);
 
     while (true) __asm__ volatile("hlt");

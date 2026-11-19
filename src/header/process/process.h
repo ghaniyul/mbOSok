@@ -147,9 +147,17 @@ struct ProcessArguments {
     char     buffer[PROCESS_ARG_BUFFER_SIZE];
 };
 
+/**
+ * Global process manager state
+ *
+ * @param active_process_count Number of active entries in _process_list
+ * @param last_pid             Last PID handed out, the next process gets last_pid + 1
+ * @param init_pid             PID of the init process (the shell)
+ */
 struct ProcessManagerState {
     uint32_t active_process_count;
     uint32_t last_pid;
+    uint32_t init_pid;
 };
 
 extern struct ProcessControlBlock _process_list[PROCESS_COUNT_MAX];
@@ -196,7 +204,7 @@ int32_t process_create_user_process_with_args(
 
 /**
  * Create the init process (the shell). Called once at boot, and again by
- * the scheduler whenever no process is left in the system.
+ * the scheduler whenever the init process is gone.
  *
  * @return Process creation return code
  */

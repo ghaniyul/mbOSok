@@ -8,6 +8,7 @@ struct ProcessControlBlock _process_list[PROCESS_COUNT_MAX] = {0};
 struct ProcessManagerState process_manager_state = {
     .active_process_count = 0,
     .last_pid             = PROCESS_PID_NONE,
+    .init_pid             = PROCESS_PID_NONE,
 };
 
 static uint32_t ceil_div(uint32_t numerator, uint32_t denominator) {
@@ -249,7 +250,10 @@ int32_t process_create_init_process(void) {
         .buffer_size  = PROCESS_EXECUTABLE_SIZE_MAX,
         .is_directory = false,
     };
-    return process_create_user_process(request);
+    uint32_t pid = PROCESS_PID_NONE;
+    int32_t retcode = process_create_user_process_with_args(request, NULL, &pid);
+    if (retcode == PROCESS_CREATE_SUCCESS) process_manager_state.init_pid = pid;
+    return retcode;
 }
 
 uint32_t process_get_foreground_pid(void) {

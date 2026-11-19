@@ -48,16 +48,14 @@ __attribute__((noreturn)) void scheduler_switch_to_next_process(void) {
     struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
     if (current_pcb != NULL) current_pcb->metadata.state = PROCESS_STATE_READY;
 
-    int32_t next_index = scheduler_get_next_ready_index();
-    if (next_index < 0) {
-        // Every process is gone (init was killed or crashed): start init again
-        if (process_manager_state.active_process_count != 0 ||
-            process_create_init_process() != PROCESS_CREATE_SUCCESS) {
-            scheduler_halt();
-        }
-        next_index = scheduler_get_next_ready_index();
-        if (next_index < 0) scheduler_halt();
+    // The system always needs its init process (the shell). Start it again
+    // when it was killed or crashed, otherwise nobody could type a command.
+    if (process_get_pcb_by_pid(process_manager_state.init_pid) == NULL) {
+        process_create_init_process();
     }
+
+    int32_t next_index = scheduler_get_next_ready_index();
+    if (next_index < 0) scheduler_halt();
 
     struct ProcessControlBlock *next_pcb = &_process_list[next_index];
     next_pcb->metadata.state = PROCESS_STATE_RUNNING;

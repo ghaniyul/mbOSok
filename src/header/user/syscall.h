@@ -9,8 +9,15 @@
  * Results come back through pointer arguments. eax is 0, or -1 for a
  * service the kernel does not implement.
  *
- * Services 10-14, 17 and 18 are reserved for Milestone 4 and are not
- * implemented by the M3 kernel.
+ * Process management services return their result in eax:
+ *   SYS_EXIT   (ebx = exit code)                       never returns
+ *   SYS_EXEC   (ebx = absolute path, ecx = argv,
+ *               edx = 1 for background)                new pid, -1 on failure
+ *   SYS_KILL   (ebx = pid)                             1 when a process was terminated
+ *   SYS_PS     (ebx = text buffer, ecx = buffer size)  process count
+ *   SYS_GETPID                                         pid of the caller
+ *
+ * Services 14 and 18 are reserved for the clock program.
  */
 
 #define SYS_READ          0

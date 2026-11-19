@@ -6,6 +6,7 @@
 #include "header/memory/paging.h"
 #include "header/process/process.h"
 #include "header/process/scheduler.h"
+#include "header/stdlib/string.h"
 #include "header/text/framebuffer.h"
 #include "header/user/syscall.h"
 
@@ -71,6 +72,26 @@ void activate_timer_interrupt(void) {
     out(PIC1_DATA, in(PIC1_DATA) & ~(1 << IRQ_TIMER));
 }
 
+/* -- Scheduler helpers -- */
+
+static bool is_from_user_mode(const struct InterruptFrame *frame) {
+    return (frame->int_stack.cs & 0x3) == 0x3;
+}
+
+/**
+ * Build the context of the interrupted process out of the interrupt frame.
+ * On inter-privilege interrupt, frame->cpu.stack.esp is the user esp (see intsetup.s).
+ */
+static struct Context context_from_frame(const struct InterruptFrame *frame) {
+    struct Context ctx = {
+        .cpu                         = frame->cpu,
+        .eip                         = frame->int_stack.eip,
+        .eflags                      = frame->int_stack.eflags,
+        .page_directory_virtual_addr = paging_get_current_page_directory_addr(),
+    };
+    return ctx;
+}
+
 /* -- Syscall helpers -- */
 
 // The whole range [ptr, ptr + len) must lie below the kernel base
@@ -96,7 +117,129 @@ static bool is_valid_fs_request(const struct EXT2DriverRequest *request, bool na
 }
 
 /**
- * System call dispatcher for Milestone 3 (User Mode & Shell).
+ * Copy a null-terminated string out of user memory.
+ *
+ * @return false when the string leaves user memory or does not fit in cap bytes
+ */
+static bool copy_user_string(char *dst, const char *src, uint32_t cap) {
+    for (uint32_t i = 0; i < cap; i++) {
+        if (!is_user_range(src + i, 1)) return false;
+        dst[i] = src[i];
+        if (dst[i] == '\0') return true;
+    }
+    return false;
+}
+
+/**
+ * Copy a NULL-terminated argv array out of user memory into kernel memory.
+ * The caller's address space disappears while the new process is built, so
+ * the arguments have to survive in the kernel in between.
+ */
+static bool copy_user_arguments(struct ProcessArguments *args, char **user_argv) {
+    memset(args, 0, sizeof(struct ProcessArguments));
+    if (user_argv == NULL) return true;
+
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < PROCESS_ARG_COUNT_MAX; i++) {
+        if (!is_user_range(&user_argv[i], sizeof(char *))) return false;
+        const char *argument = user_argv[i];
+        if (argument == NULL) break;
+
+        if (!copy_user_string(args->buffer + used, argument, PROCESS_ARG_BUFFER_SIZE - used)) return false;
+        args->offset[i] = used;
+        while (args->buffer[used] != '\0') used++;
+        used++;
+        args->argc++;
+    }
+    return true;
+}
+
+/**
+ * Walk an absolute path ("/bin/clock") from the root directory.
+ *
+ * @param path             Null-terminated path in kernel memory
+ * @param parent_inode_out Inode of the directory containing the last component
+ * @param name_out         Pointer (inside path) to the last component
+ * @param name_len_out     Length of the last component
+ * @return                 false when a directory on the way does not exist
+ */
+static bool resolve_path(const char *path, uint32_t *parent_inode_out, const char **name_out, uint8_t *name_len_out) {
+    uint32_t inode = PROCESS_INIT_PARENT_INODE; // root directory
+    const char *cursor = path;
+
+    while (true) {
+        while (*cursor == '/') cursor++;
+        if (*cursor == '\0') return false;
+
+        uint32_t length = 0;
+        while (cursor[length] != '\0' && cursor[length] != '/') length++;
+        if (length > 255) return false;
+
+        const char *rest = cursor + length;
+        while (*rest == '/') rest++;
+        if (*rest == '\0') {
+            *parent_inode_out = inode;
+            *name_out         = cursor;
+            *name_len_out     = (uint8_t) length;
+            return true;
+        }
+
+        uint32_t child_inode = 0;
+        uint8_t  file_type   = 0;
+        if (get_entry_info(cursor, (uint8_t) length, inode, &child_inode, &file_type) != 0) return false;
+        if (file_type != EXT2_FT_DIR) return false;
+        inode  = child_inode;
+        cursor = rest;
+    }
+}
+
+/**
+ * exec: create a new user process from an executable in the file system.
+ * A foreground exec blocks the caller until the new process terminates.
+ *
+ * @return PID of the new process, -1 on failure
+ */
+static int32_t syscall_exec(struct InterruptFrame *frame) {
+    // Static: too big for comfort on the stack, and syscalls are never reentrant
+    static char path[256];
+    static struct ProcessArguments arguments;
+
+    bool is_background = frame->cpu.general.edx != 0;
+    if (!copy_user_string(path, (const char *) frame->cpu.general.ebx, sizeof(path))) return -1;
+    if (!copy_user_arguments(&arguments, (char **) frame->cpu.general.ecx)) return -1;
+
+    uint32_t   parent_inode = 0;
+    const char *name        = NULL;
+    uint8_t    name_len     = 0;
+    if (!resolve_path(path, &parent_inode, &name, &name_len)) return -1;
+
+    struct EXT2DriverRequest request = {
+        .buf          = (void *) 0,
+        .name         = (char *) name,
+        .name_len     = name_len,
+        .parent_inode = parent_inode,
+        .buffer_size  = PROCESS_EXECUTABLE_SIZE_MAX,
+        .is_directory = false,
+    };
+
+    uint32_t pid = PROCESS_PID_NONE;
+    if (process_create_user_process_with_args(request, &arguments, &pid) != PROCESS_CREATE_SUCCESS) return -1;
+
+    struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+    if (!is_background && current_pcb != NULL) {
+        // Sleep until the child terminates. The saved context already carries
+        // the return value, the caller resumes right after its "int 0x30".
+        frame->cpu.general.eax = pid;
+        scheduler_save_context_to_current_running_pcb(context_from_frame(frame));
+        current_pcb->metadata.state       = PROCESS_STATE_BLOCKED;
+        current_pcb->metadata.waiting_pid = pid;
+        scheduler_switch_to_next_process();
+    }
+    return (int32_t) pid;
+}
+
+/**
+ * System call dispatcher.
  *
  * | eax | service                | ebx                      | ecx            | edx        |
  * |-----|------------------------|--------------------------|----------------|------------|
@@ -110,8 +253,16 @@ static bool is_valid_fs_request(const struct EXT2DriverRequest *request, bool na
  * | 7   | activate keyboard      | -                        | -              | -          |
  * | 8   | FS get_file_size()     | EXT2DriverRequest*       | uint32_t* out  | int8_t* ret|
  * | 9   | clear screen           | -                        | -              | -          |
+ * | 10  | exit()                 | exit code                | -              | -          |
+ * | 11  | exec()                 | char* absolute path      | char** argv    | background |
+ * | 12  | kill()                 | pid                      | -              | -          |
+ * | 13  | ps()                   | char* buffer             | buffer size    | -          |
  * | 15  | set text cursor        | row                      | col            | -          |
  * | 16  | get text cursor        | uint8_t* row             | uint8_t* col   | -          |
+ * | 17  | getpid()               | -                        | -              | -          |
+ *
+ * Return value in eax: exec -> new pid or -1, kill -> 1 when a process was
+ * terminated, ps -> process count, getpid -> pid of the caller.
  */
 void syscall(struct InterruptFrame *frame) {
     struct EXT2DriverRequest *request = (struct EXT2DriverRequest *) frame->cpu.general.ebx;
@@ -194,6 +345,33 @@ void syscall(struct InterruptFrame *frame) {
             if (current_pcb != NULL) process_destroy(current_pcb->metadata.pid);
             scheduler_switch_to_next_process();
         }
+        case SYS_EXEC:
+            frame->cpu.general.eax = (uint32_t) syscall_exec(frame);
+            break;
+        case SYS_KILL: {
+            uint32_t pid = frame->cpu.general.ebx;
+            if (process_get_pcb_by_pid(pid) == NULL) break;
+
+            struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+            bool is_self = current_pcb != NULL && current_pcb->metadata.pid == pid;
+            process_destroy(pid);
+            // A process that killed itself has nowhere to return to
+            if (is_self) scheduler_switch_to_next_process();
+            frame->cpu.general.eax = 1;
+            break;
+        }
+        case SYS_PS:
+            if (is_user_range((void *) frame->cpu.general.ebx, frame->cpu.general.ecx))
+                frame->cpu.general.eax = process_get_list_text(
+                    (char *) frame->cpu.general.ebx,
+                    frame->cpu.general.ecx
+                );
+            break;
+        case SYS_GETPID: {
+            struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+            if (current_pcb != NULL) frame->cpu.general.eax = current_pcb->metadata.pid;
+            break;
+        }
         default:
             // Unknown service
             frame->cpu.general.eax = (uint32_t) -1;
@@ -230,26 +408,6 @@ __attribute__((noreturn)) static void halt_with_fault(const char *name, struct I
     while (true) __asm__ volatile("hlt");
 }
 
-/* -- Scheduler helpers -- */
-
-static bool is_from_user_mode(const struct InterruptFrame *frame) {
-    return (frame->int_stack.cs & 0x3) == 0x3;
-}
-
-/**
- * Build the context of the interrupted process out of the interrupt frame.
- * On inter-privilege interrupt, frame->cpu.stack.esp is the user esp (see intsetup.s).
- */
-static struct Context context_from_frame(const struct InterruptFrame *frame) {
-    struct Context ctx = {
-        .cpu                         = frame->cpu,
-        .eip                         = frame->int_stack.eip,
-        .eflags                      = frame->int_stack.eflags,
-        .page_directory_virtual_addr = paging_get_current_page_directory_addr(),
-    };
-    return ctx;
-}
-
 static void fb_print_decimal(uint32_t value) {
     char buffer[10];
     uint32_t digits = 0;
@@ -283,6 +441,23 @@ static void handle_cpu_exception(const char *name, struct InterruptFrame *frame)
     scheduler_switch_to_next_process();
 }
 
+/**
+ * Ctrl+C: terminate the foreground process, which wakes up the process
+ * (the shell) that was waiting for it.
+ */
+static void interrupt_foreground_process(void) {
+    uint32_t pid = process_get_foreground_pid();
+    if (pid == PROCESS_PID_NONE) return;
+
+    struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+    bool is_current = current_pcb != NULL && current_pcb->metadata.pid == pid;
+
+    framebuffer_puts("^C\n", 3, 0x0F);
+    process_destroy(pid);
+    // The interrupted process itself is gone, there is nothing to return to
+    if (is_current) scheduler_switch_to_next_process();
+}
+
 void main_interrupt_handler(struct InterruptFrame *frame) {
     switch (frame->int_number) {
         case PIC1_OFFSET + IRQ_TIMER:
@@ -295,6 +470,7 @@ void main_interrupt_handler(struct InterruptFrame *frame) {
             break;
         case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
+            if (keyboard_consume_interrupt_request()) interrupt_foreground_process();
             break;
         case 0x0D:
             handle_cpu_exception("GENERAL PROTECTION FAULT", frame);

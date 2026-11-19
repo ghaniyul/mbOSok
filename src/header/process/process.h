@@ -203,6 +203,24 @@ int32_t process_create_user_process_with_args(
 int32_t process_create_init_process(void);
 
 /**
+ * Get the foreground process: the process that another process (usually the
+ * shell) is blocked on. This is the target of Ctrl+C.
+ *
+ * @return PID of the foreground process, PROCESS_PID_NONE if there is none
+ */
+uint32_t process_get_foreground_pid(void);
+
+/**
+ * Write the list of active processes as a text table, one line per process
+ * with its PID, parent PID, state and name. The result is null-terminated.
+ *
+ * @param buffer      Destination buffer
+ * @param buffer_size Destination buffer size in bytes
+ * @return            Number of active processes
+ */
+uint32_t process_get_list_text(char *buffer, uint32_t buffer_size);
+
+/**
  * Destroy process then release page directory and process control block
  *
  * @param pid Process ID to delete

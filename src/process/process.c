@@ -252,6 +252,85 @@ int32_t process_create_init_process(void) {
     return process_create_user_process(request);
 }
 
+uint32_t process_get_foreground_pid(void) {
+    // A foreground process is one that another process is blocked on.
+    // Skip the ones that are blocked themselves to reach the end of the chain.
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX; i++) {
+        struct ProcessControlBlock *waiter = &_process_list[i];
+        if (!waiter->metadata.active || waiter->metadata.state != PROCESS_STATE_BLOCKED) continue;
+
+        struct ProcessControlBlock *target = process_get_pcb_by_pid(waiter->metadata.waiting_pid);
+        if (target != NULL && target->metadata.state != PROCESS_STATE_BLOCKED) {
+            return target->metadata.pid;
+        }
+    }
+    return PROCESS_PID_NONE;
+}
+
+/* --- Process list as text, used by the ps system call --- */
+
+struct TextWriter {
+    char     *buffer;
+    uint32_t size;
+    uint32_t length;
+};
+
+static void text_put(struct TextWriter *writer, char c) {
+    // Always keep one byte for the null terminator
+    if (writer->length + 1 < writer->size) writer->buffer[writer->length++] = c;
+}
+
+// Write text left aligned, padded with spaces up to width
+static void text_put_string(struct TextWriter *writer, const char *text, uint32_t width) {
+    uint32_t count = 0;
+    while (text[count] != '\0') text_put(writer, text[count++]);
+    while (count++ < width) text_put(writer, ' ');
+}
+
+static void text_put_number(struct TextWriter *writer, uint32_t value, uint32_t width) {
+    char digits[11];
+    uint32_t count = 0;
+    do {
+        digits[count++] = (char) ('0' + value % 10);
+        value /= 10;
+    } while (value > 0);
+
+    char text[11];
+    for (uint32_t i = 0; i < count; i++) text[i] = digits[count - 1 - i];
+    text[count] = '\0';
+    text_put_string(writer, text, width);
+}
+
+uint32_t process_get_list_text(char *buffer, uint32_t buffer_size) {
+    if (buffer == NULL || buffer_size == 0) return 0;
+
+    struct TextWriter writer = { .buffer = buffer, .size = buffer_size, .length = 0 };
+    text_put_string(&writer, "PID", 6);
+    text_put_string(&writer, "PPID", 6);
+    text_put_string(&writer, "STATE", 9);
+    text_put_string(&writer, "NAME", 0);
+    text_put(&writer, '\n');
+
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX; i++) {
+        struct ProcessControlBlock *pcb = &_process_list[i];
+        if (!pcb->metadata.active) continue;
+
+        const char *state = "READY";
+        if (pcb->metadata.state == PROCESS_STATE_RUNNING) state = "RUNNING";
+        if (pcb->metadata.state == PROCESS_STATE_BLOCKED) state = "BLOCKED";
+
+        text_put_number(&writer, pcb->metadata.pid, 6);
+        text_put_number(&writer, pcb->metadata.parent_pid, 6);
+        text_put_string(&writer, state, 9);
+        text_put_string(&writer, pcb->metadata.name, 0);
+        text_put(&writer, '\n');
+        count++;
+    }
+    writer.buffer[writer.length] = '\0';
+    return count;
+}
+
 bool process_destroy(uint32_t pid) {
     struct ProcessControlBlock *pcb = process_get_pcb_by_pid(pid);
     if (pcb == NULL) return false;

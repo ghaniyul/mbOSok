@@ -9,17 +9,18 @@ Tugas Besar IF2130 - Sistem Operasi 2026/2027
 ## Daftar Isi
 
 1. [Authors](#authors)
-2. [Fitur Utama](#fitur-utama)
-3. [Struktur Repository](#struktur-repository)
-4. [Requirements](#requirements)
-5. [Instalasi dan Cara Menjalankan](#instalasi-dan-cara-menjalankan)
-6. [Shell Commands](#shell-commands)
-7. [User Programs](#user-programs)
-8. [File System](#file-system)
-9. [Build Commands](#build-commands)
-10. [Catatan Teknis](#catatan-teknis)
-11. [Progres Milestone](#progres-milestone)
-12. [Maskot](#maskot)
+2. [Video Demo](#video-demo)
+3. [Fitur Utama](#fitur-utama)
+4. [Struktur Repository](#struktur-repository)
+5. [Requirements](#requirements)
+6. [Instalasi dan Cara Menjalankan](#instalasi-dan-cara-menjalankan)
+7. [Shell Commands](#shell-commands)
+8. [User Programs](#user-programs)
+9. [File System](#file-system)
+10. [Build Commands](#build-commands)
+11. [Catatan Teknis](#catatan-teknis)
+12. [Progres Milestone](#progres-milestone)
+13. [Maskot](#maskot)
 
 ## Authors
 
@@ -29,6 +30,12 @@ Tugas Besar IF2130 - Sistem Operasi 2026/2027
 | Raditya Wibian Sastaka | 13525019 |
 | Mochammad Nuha Al Ghifari | 13525056 |
 | Ghaniyul Amri Caulava | 13525106 |
+
+## Video Demo
+
+Video demo mbOSok (bonus) dapat dilihat di Google Drive berikut:
+
+**[Folder Video Demo mbOSok](https://drive.google.com/drive/folders/1VpPre4YQPDeZfukPOFSLcRnOs5XG7J4H?usp=sharing)**
 
 ## Fitur Utama
 

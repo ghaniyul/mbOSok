@@ -781,6 +781,11 @@ static void cmd_mkdir(const char *name) {
         print_error("mkdir: invalid name: ", name);
         return;
     }
+    // EXT2 allows a file and a folder with the same name, the shell does not
+    if (find_in_dir(name, cwd_inode, NULL) != 0) {
+        print_error("mkdir: already exists: ", name);
+        return;
+    }
     int8_t retcode = make_directory(name, cwd_inode);
     if (retcode == 1) print_error("mkdir: already exists: ", name);
     else if (retcode != 0) print_error("mkdir: failed: ", name);

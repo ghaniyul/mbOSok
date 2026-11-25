@@ -820,13 +820,14 @@ int8_t write(struct EXT2DriverRequest *request) {
     read_inode(request->parent_inode, &parent);
     if ((parent.i_mode & EXT2_S_IFDIR) == 0) return 2;
 
-    bool is_directory = request->is_directory;
+    // Kit spec: buffer_size == 0 also creates a folder
+    bool is_directory = request->is_directory || request->buffer_size == 0;
     uint8_t file_type = is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
 
     struct ext2_dir_scan scan;
     scan_directory(&parent, request->name, request->name_len, file_type, &scan);
-    // A name may only exist once in a directory, no matter its type
-    if (scan.name_matched) return 1;
+    // Kit spec: a file and a folder may share a name, only the same type clashes
+    if (scan.found) return 1;
 
     uint32_t inode = allocate_node();
     if (inode == 0) return -1;

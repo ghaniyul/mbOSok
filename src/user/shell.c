@@ -69,6 +69,15 @@ static bool str_eq(const char *a, const char *b) {
     return *a == *b;
 }
 
+static bool str_prefix(const char *s, const char *prefix) {
+    while (*prefix != '\0') {
+        if (*s != *prefix) return false;
+        s++;
+        prefix++;
+    }
+    return true;
+}
+
 static void str_copy(char *dst, const char *src, uint32_t cap) {
     uint32_t i = 0;
     if (cap == 0) return;
@@ -161,6 +170,33 @@ static bool is_dot_entry(struct EXT2DirectoryEntry *entry) {
     return false;
 }
 
+static bool is_dot_name(const char *name) {
+    return str_eq(name, ".") || str_eq(name, "..");
+}
+
+/**
+ * Check that a single directory entry name is usable: not empty, not "." or
+ * "..", within the EXT2 name limit and without a path separator.  Only one
+ * component is supported per command (multi component paths are optional in
+ * the assignment), so a slash in a name is always a user mistake.
+ */
+static bool is_valid_name(const char *name) {
+    if (name == NULL || name[0] == '\0' || is_dot_name(name)) return false;
+    uint32_t length = str_len(name);
+    if (length > 255) return false;
+    for (uint32_t i = 0; i < length; i++) {
+        if (name[i] == '/') return false;
+    }
+    return true;
+}
+
+/** Copy name into out, dropping trailing slashes ("d1/" -> "d1"). */
+static void base_name(const char *name, char *out, uint32_t cap) {
+    str_copy(out, name, cap);
+    uint32_t length = str_len(out);
+    while (length > 1 && out[length - 1] == '/') out[--length] = '\0';
+}
+
 static int8_t load_directory(uint32_t inode) {
     struct EXT2DriverRequest request = {
         .buf          = dir_buffer,
@@ -181,7 +217,11 @@ static uint32_t find_in_dir(const char *name, uint32_t parent_inode, uint8_t *ty
     if (name == NULL) return 0;
     if (load_directory(parent_inode) != 0) return 0;
 
-    uint8_t name_len = (uint8_t) str_len(name);
+    // Tolerate a trailing slash: "d1/" names the same entry as "d1"
+    uint32_t length = str_len(name);
+    while (length > 1 && name[length - 1] == '/') length--;
+    if (length == 0) return 0;
+    uint8_t name_len = (uint8_t) length;
     uint32_t offset = 0;
     while (offset + sizeof(struct EXT2DirectoryEntry) <= DIR_BUFFER_SIZE) {
         struct EXT2DirectoryEntry *entry = entry_at(offset);
@@ -262,26 +302,17 @@ static int8_t query_file_size(const char *name, uint32_t parent_inode, uint32_t 
 /* Path handling                                                      */
 /* ------------------------------------------------------------------ */
 
-static void path_push(const char *name) {
-    if (str_eq(cwd_path, "/")) {
-        str_copy(cwd_path + 1, name, PATH_MAX - 1);
-    } else {
-        str_append(cwd_path, "/", PATH_MAX);
-        str_append(cwd_path, name, PATH_MAX);
-    }
-}
-
-static void path_pop(void) {
-    uint32_t len = str_len(cwd_path);
+static void path_pop_string(char *path, uint32_t cap) {
+    uint32_t len = str_len(path);
     if (len <= 1) {
-        str_copy(cwd_path, "/", PATH_MAX);
+        str_copy(path, "/", cap);
         return;
     }
-    while (len > 1 && cwd_path[len - 1] != '/') len--;
+    while (len > 1 && path[len - 1] != '/') len--;
     if (len <= 1) {
-        str_copy(cwd_path, "/", PATH_MAX);
+        str_copy(path, "/", cap);
     } else {
-        cwd_path[len - 1] = '\0';
+        path[len - 1] = '\0';
     }
 }
 
@@ -312,6 +343,60 @@ static uint32_t dir_child_inode(const char *name, uint32_t name_len, uint32_t di
     uint32_t inode = find_in_dir(segment, dir_inode, &type);
     if (inode == 0 || type != EXT2_FT_DIR) return 0;
     return inode;
+}
+
+/**
+ * Resolve a path that must point to a directory. Both absolute paths and
+ * paths relative to the current working directory are accepted, and "." and
+ * ".." components are folded away. The normalized absolute path is written
+ * to path_out so pwd keeps showing a clean path.
+ *
+ * @return true on success, false when a component is missing or not a folder
+ */
+static bool resolve_directory_path(const char *path, uint32_t *inode_out,
+                                   char *path_out, uint32_t cap) {
+    uint32_t inode = cwd_inode;
+    str_copy(path_out, cwd_path, cap);
+
+    const char *cursor = path;
+    if (*cursor == '/') {
+        inode = 1;
+        str_copy(path_out, "/", cap);
+    }
+
+    while (*cursor != '\0') {
+        while (*cursor == '/') cursor++;
+        if (*cursor == '\0') break;
+
+        const char *slash = cursor;
+        while (*slash != '\0' && *slash != '/') slash++;
+        uint32_t length = (uint32_t) (slash - cursor);
+
+        if (length == 1 && cursor[0] == '.') {
+            // The current directory: the path does not change
+        } else if (length == 2 && cursor[0] == '.' && cursor[1] == '.') {
+            uint32_t parent = dir_child_inode(cursor, length, inode);
+            if (parent == 0) return false;
+            inode = parent;
+            path_pop_string(path_out, cap);
+        } else {
+            uint32_t child = dir_child_inode(cursor, length, inode);
+            if (child == 0) return false;
+            inode = child;
+
+            char segment[PATH_MAX];
+            if (length >= PATH_MAX) return false;
+            memcpy(segment, cursor, length);
+            segment[length] = '\0';
+            if (!str_eq(path_out, "/")) str_append(path_out, "/", cap);
+            str_append(path_out, segment, cap);
+        }
+
+        cursor = slash;
+    }
+
+    *inode_out = inode;
+    return true;
 }
 
 /**
@@ -436,7 +521,6 @@ static void path_set_default(void) {
     path_dir_count = 1;
     str_copy(path_dirs[0], "/bin", PATH_MAX);
 }
-
 /**
  * Copy one PATH entry, making sure it is an absolute path.
  */
@@ -579,7 +663,7 @@ static int8_t copy_tree(uint32_t src_inode, uint32_t dst_parent, const char *dst
         } else {
             uint32_t size = 0;
             if (query_file_size(children[i].name, src_inode, &size) != 0) return -1;
-            if (size == 0 || size > FILE_BUFFER_SIZE) return -1;
+            if (size > FILE_BUFFER_SIZE) return -1;
             if (read_file(children[i].name, src_inode, file_buffer, FILE_BUFFER_SIZE) != 0)
                 return -1;
             if (write_file(children[i].name, dst_inode, file_buffer, size) != 0)
@@ -617,7 +701,7 @@ static void cmd_help(void) {
     out_str("  clear             clear the screen\n");
     out_str("  pwd               print working directory\n");
     out_str("  cd [dir|..|/]     change working directory\n");
-    out_str("  ls                list current directory\n");
+    out_str("  ls [dir]          list current (or another) directory\n");
     out_str("  mkdir <name>      create a new directory\n");
     out_str("  cat <file>        print a file\n");
     out_str("  cp <src> <dst>    copy file or folder\n");
@@ -634,8 +718,23 @@ static void cmd_help(void) {
     out_str("Programs in PATH run by name (clock &, hello). Ctrl+C stops them.\n");
 }
 
-static void cmd_ls(void) {
-    if (load_directory(cwd_inode) != 0) {
+static void cmd_ls(const char *name) {
+    uint32_t inode = cwd_inode;
+    if (name != NULL) {
+        uint8_t type = 0;
+        inode = find_in_dir(name, cwd_inode, &type);
+        if (inode == 0) {
+            print_error("ls: not found: ", name);
+            return;
+        }
+        if (type != EXT2_FT_DIR) {
+            // Like UNIX, listing a file simply prints its name
+            out_str(name);
+            out_newline();
+            return;
+        }
+    }
+    if (load_directory(inode) != 0) {
         print_error("ls: cannot read directory", NULL);
         return;
     }
@@ -662,40 +761,24 @@ static void cmd_cd(const char *dest) {
         str_copy(cwd_path, "/", PATH_MAX);
         return;
     }
-    if (str_eq(dest, "..")) {
-        if (load_directory(cwd_inode) != 0) {
-            print_error("cd: cannot read directory", NULL);
-            return;
-        }
-        uint32_t offset = 0;
-        uint32_t index = 0;
-        while (offset + sizeof(struct EXT2DirectoryEntry) <= DIR_BUFFER_SIZE) {
-            struct EXT2DirectoryEntry *entry = entry_at(offset);
-            if (entry->rec_len < sizeof(struct EXT2DirectoryEntry)) break;
-            if (index == 1) {
-                cwd_inode = entry->inode;
-                break;
-            }
-            offset += entry->rec_len;
-            index++;
-        }
-        path_pop();
-        return;
-    }
 
-    uint8_t type = 0;
-    uint32_t inode = find_in_dir(dest, cwd_inode, &type);
-    if (inode == 0 || type != EXT2_FT_DIR) {
+    uint32_t inode = 0;
+    char resolved[PATH_MAX];
+    if (!resolve_directory_path(dest, &inode, resolved, PATH_MAX)) {
         print_error("cd: not a directory: ", dest);
         return;
     }
     cwd_inode = inode;
-    path_push(dest);
+    str_copy(cwd_path, resolved, PATH_MAX);
 }
 
 static void cmd_mkdir(const char *name) {
     if (name == NULL) {
         print_error("mkdir: missing operand", NULL);
+        return;
+    }
+    if (!is_valid_name(name)) {
+        print_error("mkdir: invalid name: ", name);
         return;
     }
     int8_t retcode = make_directory(name, cwd_inode);
@@ -726,36 +809,85 @@ static void cmd_cat(const char *name) {
     if (size > 0 && file_buffer[size - 1] != '\n') out_newline();
 }
 
+/**
+ * Work out where a copy/move destination should land. When dst exists and is
+ * a directory the source is placed inside it under its own name, like UNIX
+ * "cp file dir/". Otherwise dst is the new name and must not exist yet.
+ *
+ * @return false when the destination is invalid or taken (the error is printed)
+ */
+static bool resolve_destination(const char *src, const char *dst, uint32_t src_inode,
+                                uint32_t *parent_out, char *name_out, uint32_t cap,
+                                const char *command) {
+    uint8_t type = 0;
+    uint32_t inode = find_in_dir(dst, cwd_inode, &type);
+    if (inode != 0) {
+        if (type != EXT2_FT_DIR || inode == src_inode) {
+            out_str(command);
+            out_str(": destination exists: ");
+            out_str(dst);
+            out_newline();
+            return false;
+        }
+        *parent_out = inode;
+        base_name(src, name_out, cap);
+        if (find_in_dir(name_out, *parent_out, NULL) != 0) {
+            out_str(command);
+            out_str(": destination exists: ");
+            out_str(dst);
+            out_newline();
+            return false;
+        }
+        return true;
+    }
+
+    char dst_name[PATH_MAX];
+    base_name(dst, dst_name, sizeof(dst_name));
+    if (!is_valid_name(dst_name)) {
+        out_str(command);
+        out_str(": invalid destination: ");
+        out_str(dst);
+        out_newline();
+        return false;
+    }
+    *parent_out = cwd_inode;
+    str_copy(name_out, dst_name, cap);
+    return true;
+}
+
 static void cmd_cp(const char *src, const char *dst) {
     if (src == NULL || dst == NULL) {
         print_error("cp: usage: cp <src> <dst>", NULL);
         return;
     }
+    char src_name[PATH_MAX];
+    base_name(src, src_name, sizeof(src_name));
     uint8_t type = 0;
-    uint32_t inode = find_in_dir(src, cwd_inode, &type);
+    uint32_t inode = find_in_dir(src_name, cwd_inode, &type);
     if (inode == 0) {
         print_error("cp: not found: ", src);
         return;
     }
-    if (find_in_dir(dst, cwd_inode, NULL) != 0) {
-        print_error("cp: destination exists: ", dst);
-        return;
-    }
+
+    uint32_t parent = cwd_inode;
+    char name[PATH_MAX];
+    if (!resolve_destination(src_name, dst, inode, &parent, name, sizeof(name), "cp")) return;
+
     if (type == EXT2_FT_DIR) {
-        if (copy_tree(inode, cwd_inode, dst, 0) != 0)
+        if (copy_tree(inode, parent, name, 0) != 0)
             print_error("cp: failed to copy folder: ", src);
         return;
     }
     uint32_t size = 0;
-    if (query_file_size(src, cwd_inode, &size) != 0 || size > FILE_BUFFER_SIZE || size == 0) {
+    if (query_file_size(src_name, cwd_inode, &size) != 0 || size > FILE_BUFFER_SIZE) {
         print_error("cp: cannot read: ", src);
         return;
     }
-    if (read_file(src, cwd_inode, file_buffer, FILE_BUFFER_SIZE) != 0) {
+    if (read_file(src_name, cwd_inode, file_buffer, FILE_BUFFER_SIZE) != 0) {
         print_error("cp: read failed: ", src);
         return;
     }
-    if (write_file(dst, cwd_inode, file_buffer, size) != 0)
+    if (write_file(name, parent, file_buffer, size) != 0)
         print_error("cp: write failed: ", dst);
 }
 
@@ -764,13 +896,24 @@ static void cmd_rm(const char *name) {
         print_error("rm: missing operand", NULL);
         return;
     }
+    if (is_dot_name(name) || str_eq(name, "/")) {
+        print_error("rm: refusing to remove: ", name);
+        return;
+    }
+    char target[PATH_MAX];
+    base_name(name, target, sizeof(target));
+    if (!is_valid_name(target)) {
+        print_error("rm: invalid name: ", name);
+        return;
+    }
+
     uint8_t type = 0;
-    uint32_t inode = find_in_dir(name, cwd_inode, &type);
+    uint32_t inode = find_in_dir(target, cwd_inode, &type);
     if (inode == 0) {
         print_error("rm: not found: ", name);
         return;
     }
-    if (remove_tree(inode, cwd_inode, name, type, 0) != 0)
+    if (remove_tree(inode, cwd_inode, target, type, 0) != 0)
         print_error("rm: failed: ", name);
 }
 
@@ -779,35 +922,39 @@ static void cmd_mv(const char *src, const char *dst) {
         print_error("mv: usage: mv <src> <dst>", NULL);
         return;
     }
+    char src_name[PATH_MAX];
+    base_name(src, src_name, sizeof(src_name));
     uint8_t type = 0;
-    uint32_t inode = find_in_dir(src, cwd_inode, &type);
+    uint32_t inode = find_in_dir(src_name, cwd_inode, &type);
     if (inode == 0) {
         print_error("mv: not found: ", src);
         return;
     }
-    if (find_in_dir(dst, cwd_inode, NULL) != 0) {
-        print_error("mv: destination exists: ", dst);
-        return;
-    }
+
+    uint32_t parent = cwd_inode;
+    char name[PATH_MAX];
+    if (!resolve_destination(src_name, dst, inode, &parent, name, sizeof(name), "mv")) return;
+
     if (type == EXT2_FT_DIR) {
-        if (copy_tree(inode, cwd_inode, dst, 0) != 0 || remove_tree(inode, cwd_inode, src, type, 0) != 0)
+        if (copy_tree(inode, parent, name, 0) != 0 ||
+            remove_tree(inode, cwd_inode, src_name, type, 0) != 0)
             print_error("mv: failed: ", src);
         return;
     }
     uint32_t size = 0;
-    if (query_file_size(src, cwd_inode, &size) != 0 || size > FILE_BUFFER_SIZE || size == 0) {
+    if (query_file_size(src_name, cwd_inode, &size) != 0 || size > FILE_BUFFER_SIZE) {
         print_error("mv: cannot read: ", src);
         return;
     }
-    if (read_file(src, cwd_inode, file_buffer, FILE_BUFFER_SIZE) != 0) {
+    if (read_file(src_name, cwd_inode, file_buffer, FILE_BUFFER_SIZE) != 0) {
         print_error("mv: read failed: ", src);
         return;
     }
-    if (write_file(dst, cwd_inode, file_buffer, size) != 0) {
+    if (write_file(name, parent, file_buffer, size) != 0) {
         print_error("mv: write failed: ", dst);
         return;
     }
-    if (delete_entry(src, cwd_inode, false) != 0)
+    if (delete_entry(src_name, cwd_inode, false) != 0)
         print_error("mv: could not remove source: ", src);
 }
 
@@ -1079,7 +1226,7 @@ static void run_command(char *command) {
         out_str(cwd_path);
         out_newline();
     } else if (str_eq(cmd, "ls")) {
-        cmd_ls();
+        cmd_ls(argc > 1 ? argv[1] : NULL);
     } else if (str_eq(cmd, "cd")) {
         cmd_cd(argc > 1 ? argv[1] : NULL);
     } else if (str_eq(cmd, "mkdir")) {
@@ -1107,6 +1254,9 @@ static void run_command(char *command) {
     } else if (str_eq(cmd, "export")) {
         if (argc >= 3 && (str_eq(argv[1], "PATH") || str_eq(argv[1], "path"))) {
             path_set(argv[2]);
+        } else if (argc == 2 && (str_prefix(argv[1], "PATH=") || str_prefix(argv[1], "path="))) {
+            // Accept the familiar Unix spelling: export PATH=/bin:/apps
+            path_set(argv[1] + 5);
         } else if (argc == 2) {
             path_set(argv[1]);
         } else {

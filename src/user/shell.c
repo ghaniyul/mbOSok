@@ -721,16 +721,16 @@ static void cmd_help(void) {
 static void cmd_ls(const char *name) {
     uint32_t inode = cwd_inode;
     if (name != NULL) {
-        uint8_t type = 0;
-        inode = find_in_dir(name, cwd_inode, &type);
-        if (inode == 0) {
-            print_error("ls: not found: ", name);
-            return;
-        }
-        if (type != EXT2_FT_DIR) {
-            // Like UNIX, listing a file simply prints its name
-            out_str(name);
-            out_newline();
+        // Accept absolute and relative paths such as /bin, ../a or a/b
+        char resolved[PATH_MAX];
+        if (!resolve_directory_path(name, &inode, resolved, PATH_MAX)) {
+            if (file_exists(name)) {
+                // Like UNIX, listing a file simply prints its name
+                out_str(name);
+                out_newline();
+            } else {
+                print_error("ls: not found: ", name);
+            }
             return;
         }
     }

@@ -14,6 +14,11 @@
 #define KEYBOARD_DATA_PORT     0x60
 #define EXTENDED_SCANCODE_BYTE 0xE0
 
+// Characters waiting for get_keyboard_buffer(), a power of two so the uint8_t
+// indices can wrap around safely.  Without it, typing while the shell is busy
+// (for example while a foreground program runs) silently loses keystrokes.
+#define KEYBOARD_QUEUE_SIZE    64
+
 // Modifier keys, scancode set 1 make codes (break code = make code | 0x80)
 #define SCANCODE_RELEASE_BIT   0x80
 #define SCANCODE_CTRL          0x1D
@@ -34,7 +39,7 @@ extern const char keyboard_scancode_1_to_ascii_map[256];
  * 
  * @param read_extended_mode Optional, can be used for signaling next read is extended scancode (ex. arrow keys)
  * @param keyboard_input_on  Indicate whether keyboard ISR is activated or not
- * @param keyboard_buffer    Storing keyboard input values in ASCII
+ * @param keyboard_queue     Pending keyboard input values in ASCII (ring buffer)
  * @param shift_pressed      Left or right shift is currently held
  * @param ctrl_pressed       Left or right ctrl is currently held
  * @param caps_lock_on       Caps lock toggle state
@@ -43,7 +48,9 @@ extern const char keyboard_scancode_1_to_ascii_map[256];
 struct KeyboardDriverState {
     bool read_extended_mode;
     bool keyboard_input_on;
-    char keyboard_buffer;
+    char keyboard_queue[KEYBOARD_QUEUE_SIZE];
+    volatile uint8_t keyboard_queue_head;
+    volatile uint8_t keyboard_queue_tail;
     bool shift_pressed;
     bool ctrl_pressed;
     bool caps_lock_on;

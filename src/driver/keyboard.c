@@ -25,7 +25,8 @@ const char keyboard_scancode_1_to_ascii_map[256] = {
 static struct KeyboardDriverState keyboard_state = {
     .read_extended_mode  = false,
     .keyboard_input_on   = false,
-    .keyboard_buffer     = 0,
+    .keyboard_queue_head = 0,
+    .keyboard_queue_tail = 0,
     .shift_pressed       = false,
     .ctrl_pressed        = false,
     .caps_lock_on        = false,
@@ -72,8 +73,27 @@ void keyboard_state_deactivate(void) {
 }
 
 void get_keyboard_buffer(char *buf) {
-    *buf = keyboard_state.keyboard_buffer;
-    keyboard_state.keyboard_buffer = 0;
+    if (keyboard_state.keyboard_queue_head == keyboard_state.keyboard_queue_tail) {
+        *buf = 0;
+        return;
+    }
+    *buf = keyboard_state.keyboard_queue[keyboard_state.keyboard_queue_tail];
+    keyboard_state.keyboard_queue_tail =
+        (uint8_t) ((keyboard_state.keyboard_queue_tail + 1) % KEYBOARD_QUEUE_SIZE);
+}
+
+/**
+ * Append one character to the ring buffer. If it is full the oldest character
+ * is dropped, so the most recent input always survives.
+ */
+static void keyboard_queue_push(char c) {
+    uint8_t next = (uint8_t) ((keyboard_state.keyboard_queue_head + 1) % KEYBOARD_QUEUE_SIZE);
+    if (next == keyboard_state.keyboard_queue_tail) {
+        keyboard_state.keyboard_queue_tail =
+            (uint8_t) ((keyboard_state.keyboard_queue_tail + 1) % KEYBOARD_QUEUE_SIZE);
+    }
+    keyboard_state.keyboard_queue[keyboard_state.keyboard_queue_head] = c;
+    keyboard_state.keyboard_queue_head = next;
 }
 
 bool keyboard_consume_interrupt_request(void) {
@@ -114,7 +134,7 @@ void keyboard_isr(void) {
                 bool use_shift = keyboard_state.shift_pressed;
                 // Caps lock only affects letters and is cancelled by shift
                 if (is_letter && keyboard_state.caps_lock_on) use_shift = !use_shift;
-                keyboard_state.keyboard_buffer = use_shift ? keyboard_shift_char(c) : c;
+                keyboard_queue_push(use_shift ? keyboard_shift_char(c) : c);
             }
         }
     }

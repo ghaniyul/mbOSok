@@ -277,5 +277,12 @@ void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr) {
     if ((uint32_t) page_dir_virtual_addr >= KERNEL_VIRTUAL_ADDRESS_BASE) {
         physical_addr_page_dir -= KERNEL_VIRTUAL_ADDRESS_BASE;
     }
+
+    // Reloading CR3 flushes the whole TLB, which is expensive when the
+    // scheduler keeps switching to the process that is already active.
+    uint32_t current_page_dir;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(current_page_dir) : /* <Empty> */);
+    if (current_page_dir == physical_addr_page_dir) return;
+
     __asm__ volatile("mov %0, %%cr3" : /* <Empty> */ : "r"(physical_addr_page_dir) : "memory");
 }

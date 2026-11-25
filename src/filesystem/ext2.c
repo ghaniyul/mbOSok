@@ -1,6 +1,5 @@
 #include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include "header/stdlib/string.h"
 #include "header/filesystem/ext2.h"
 
@@ -44,14 +43,6 @@ static void store_bgd_table(void) {
     struct BlockBuffer buffer;
     memset(&buffer, 0, BLOCK_SIZE);
     memcpy(buffer.buf, &bgd_table, sizeof(bgd_table));
-    write_blocks(&buffer, 2, 1);
-}
-
-static void store_bgd(uint32_t bgd) {
-    struct BlockBuffer buffer;
-    read_blocks(&buffer, 2, 1);
-    memcpy(buffer.buf + bgd * sizeof(struct EXT2BlockGroupDescriptor),
-           &bgd_table.table[bgd], sizeof(struct EXT2BlockGroupDescriptor));
     write_blocks(&buffer, 2, 1);
 }
 
@@ -123,7 +114,6 @@ static uint32_t allocate_block(uint32_t prefered_bgd) {
                 write_bitmap(bgd_table.table[bgd].bg_block_bitmap, &bitmap);
                 bgd_table.table[bgd].bg_free_blocks_count--;
                 if (superblock.s_free_blocks_count > 0) superblock.s_free_blocks_count--;
-                store_bgd(bgd);
                 return bgd * BLOCKS_PER_GROUP + local;
             }
         }
@@ -143,7 +133,6 @@ static void free_block(uint32_t block) {
         write_bitmap(bgd_table.table[bgd].bg_block_bitmap, &bitmap);
         bgd_table.table[bgd].bg_free_blocks_count++;
         superblock.s_free_blocks_count++;
-        store_bgd(bgd);
     }
 }
 
@@ -159,7 +148,6 @@ uint32_t allocate_node(void) {
                 write_bitmap(bgd_table.table[bgd].bg_inode_bitmap, &bitmap);
                 bgd_table.table[bgd].bg_free_inodes_count--;
                 if (superblock.s_free_inodes_count > 0) superblock.s_free_inodes_count--;
-                store_bgd(bgd);
                 return bgd * INODES_PER_GROUP + local + 1;
             }
         }
@@ -179,7 +167,6 @@ static void free_inode_bit(uint32_t inode) {
         write_bitmap(bgd_table.table[bgd].bg_inode_bitmap, &bitmap);
         bgd_table.table[bgd].bg_free_inodes_count++;
         superblock.s_free_inodes_count++;
-        store_bgd(bgd);
     }
 }
 
@@ -833,12 +820,13 @@ int8_t write(struct EXT2DriverRequest *request) {
     read_inode(request->parent_inode, &parent);
     if ((parent.i_mode & EXT2_S_IFDIR) == 0) return 2;
 
-    bool is_directory = request->is_directory || request->buffer_size == 0;
+    bool is_directory = request->is_directory;
     uint8_t file_type = is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
 
     struct ext2_dir_scan scan;
     scan_directory(&parent, request->name, request->name_len, file_type, &scan);
-    if (scan.found) return 1;
+    // A name may only exist once in a directory, no matter its type
+    if (scan.name_matched) return 1;
 
     uint32_t inode = allocate_node();
     if (inode == 0) return -1;

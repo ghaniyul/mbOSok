@@ -1,4 +1,7 @@
 # Jurnal Pengerjaan Tugas Besar IF2130 - Sistem Operasi
+
+Jurnal ini mencakup Milestone 2, 3, dan 4.
+
 ## Milestone 2: File System EXT2 (IF2130 Edition)
 
 ---
@@ -146,3 +149,117 @@ Seluruh 16 pengujian berhasil dilewati (**100% PASS**) tanpa adanya error, crash
 ## 6. Kesimpulan dan Refleksi
 
 Implementasi Chapter 2 (Milestone 2) telah memenuhi 100% spesifikasi teknis dan batasan yang tercantum pada dokumen panduan praktikum IF2130 Sister Lab ITB. Sistem operasi kini memiliki kapabilitas persistensi sekunder berkinerja tinggi, modular, dan siap digunakan sebagai fondasi pemuatan executable biner (User Mode Shell) pada Milestone 3 berikutnya.
+
+---
+---
+
+## Milestone 3: Paging, User Mode & Shell
+
+- **Target Milestone:** Milestone 3 (v0.3.x) — Paging, User Mode, Shell
+
+### 1. Ringkasan Implementasi
+
+1. **Higher-half kernel & paging 4 KiB**: kernel dipetakan ke `0xC0000000`. `kernel-entrypoint.s` mengisi page table pertama, membuat identity map sementara untuk lompatan ke higher half, lalu menghapusnya. PDE ke-1023 menunjuk page directory itu sendiri (recursive mapping) agar page table bisa diakses dari C.
+2. **Page frame manager** (`src/memory/paging.c`): alokasi dan dealokasi frame 4 KiB untuk user, 4 MiB pertama dicadangkan untuk kernel, GRUB, dan MMIO.
+3. **GDT user segment & TSS**: segmen code/data DPL 3 dan descriptor TSS. `esp0` diisi sebelum masuk user mode agar interrupt dari ring 3 mendapat kernel stack.
+4. **System call `int 0x30`**: gate IDT DPL 3, dispatcher di `interrupt.c` dengan validasi pointer (`is_user_range`) agar user program tidak bisa membaca atau menulis memori kernel.
+5. **Shell ring 3** (`src/user/shell.c`): `ls`, `cd`, `pwd`, `mkdir`, `cat`, `cp`, `mv`, `rm`, `find`, `grep`, pipeline, dan copy/remove folder secara rekursif.
+6. **Inserter host** (`src/external/external-inserter.c`): memasukkan file ke `storage.bin` dari host, memakai ulang `ext2.c`.
+
+### 2. Masalah & Solusi
+
+| Masalah | Penyebab | Solusi |
+|:---|:---|:---|
+| Triple fault tepat setelah paging aktif | Instruksi berikutnya masih berjalan di alamat fisik yang belum dipetakan | Identity map 4 MiB pertama sementara, lompat ke label higher half, lalu hapus identity map dan reload CR3 |
+| Page table tidak bisa diakses dari C | Page table hanya punya alamat fisik | Recursive mapping di PDE 1023, page table dapat dibaca di `0xFFC00000 + index * 4 KiB` |
+| Syscall dari ring 3 langsung GPF | Gate IDT `0x30` masih DPL 0 | Gate syscall dibuat DPL 3 |
+| Interrupt dari user mode merusak stack | `TSS.esp0` belum diisi | `set_tss_kernel_current_stack()` dipanggil sebelum lompat ke user mode |
+| Pointer syscall dari user dapat menunjuk memori kernel | Tidak ada validasi alamat | `is_user_range()` memastikan seluruh rentang buffer berada di bawah `0xC0000000` |
+| QEMU hang bila disk tidak merespons | Polling ATA tanpa batas | Polling ATA diberi batas `ATA_WAIT_TIMEOUT` |
+
+### 3. Pengujian
+
+Shell berhasil dimuat dari EXT2 ke alamat virtual `0x0` dan berjalan di ring 3. Semua command shell, pipeline (`ls | grep txt`), serta copy/remove folder rekursif diuji di QEMU.
+
+---
+---
+
+## Milestone 4: Process, Scheduler & Multitasking
+
+- **Target Milestone:** Milestone 4 (v1.x.x) — Final Release
+
+### 1. Ringkasan Implementasi
+
+1. **Koreksi kit Chapter 1 (4.1.0)**: `intsetup.s` dan `CPURegister` disesuaikan dengan `ch4/correction`. Pada interrupt antar-privilege, `cpu.stack.esp` berisi `esp` user sehingga dapat disimpan ke context.
+2. **Process (4.1)** (`src/process/process.c`):
+   - PCB berisi metadata (PID, parent PID, state, nama, PID yang ditunggu), `struct Context` (seluruh register, `eip`, `eflags`, page directory), dan daftar frame yang dipakai.
+   - Tiga state: `READY`, `RUNNING`, `BLOCKED`. Maksimal 16 process, PID tidak pernah dipakai ulang.
+   - Setiap process punya page directory sendiri: image executable di `0x0` (maksimal 1 MiB) dan stack 64 KiB di bawah `0x400000`. Argumen (`argc`, `argv`) disalin ke puncak stack user.
+   - Shell menjadi init process. Jika shell mati atau di-`kill`, scheduler membuatnya kembali.
+3. **Scheduler (4.2)** (`src/process/scheduler.c`, `context-switch.s`):
+   - PIT diatur 1000 Hz pada IRQ0. Setiap tick dari user mode menyimpan context lalu memanggil scheduler.
+   - Algoritma Round Robin, satu tick per time slice.
+   - `process_context_switch` menyusun stack `iret` (ss, esp, eflags, cs, eip), memuat semua register, lalu `iret` ke ring 3. Pergantian CR3 dilakukan di C sebelumnya.
+4. **Exit (4.3.1)**: `crt0.s` memanggil syscall 10 setelah `main()` selesai. Kernel menghancurkan process lalu pindah ke process berikutnya.
+5. **Process management (4.3.2)**: syscall `exec` (path absolut, `argv`, flag background), `kill`, `ps`, `getpid`. Shell menyediakan `exec`, `ps`, `kill`. Program tanpa `&` berjalan di foreground: shell `BLOCKED` sampai program selesai, dan Ctrl+C menghentikannya.
+6. **Clock (4.3.3)**: driver CMOS (`src/driver/cmos.c`) dengan konversi BCD dan 12/24 jam, syscall `GET_TIME` dan `WRITE_AT`. Program `clock` menampilkan `HH:MM:SS` di pojok kanan bawah, dapat di-`kill` lalu di-`exec` lagi.
+7. **External application (4.3.4)**: `hello` (Hello World! dan sapaan untuk setiap argumen) serta `echo`, keduanya executable terpisah di `/bin` yang dijalankan lewat `exec` atau cukup dengan namanya.
+8. **Bonus**: `PATH` yang dapat diubah dengan `export` dan persisten di `path.cfg`, serta command terpisah dari shell (`echo`).
+9. **Ketahanan**: fault dari user process (page fault, GPF, divide error, pointer syscall tidak valid) hanya menghentikan process tersebut. Driver keyboard mendukung Shift, Caps Lock, Ctrl+C, dan antrean input 64 karakter.
+
+### 2. Masalah yang Dihadapi & Solusi
+
+#### Masalah 1: Nama executable hilang ketika page directory diganti
+- **Deskripsi:** `exec` menerima nama file dari memori user. Setelah page directory process baru diaktifkan untuk alokasi frame, alamat itu menunjuk ke memori process baru sehingga pembacaan file gagal.
+- **Solusi:** path dan argumen disalin ke memori kernel lebih dulu (`copy_user_string`, `copy_user_arguments`), baru process baru dibuat.
+
+#### Masalah 2: Timer interrupt berhenti setelah context switch pertama
+- **Deskripsi:** `process_context_switch` tidak pernah kembali ke handler, sehingga PIC tidak menerima ACK dan IRQ0 berikutnya terblokir.
+- **Solusi:** `pic_ack(IRQ_TIMER)` dipanggil di awal handler, sebelum context disimpan dan scheduler dipanggil.
+
+#### Masalah 3: Page table process baru tidak dapat diakses
+- **Deskripsi:** `paging_get_page_table()` memakai recursive mapping, sehingga hanya bisa memanipulasi page directory yang sedang aktif.
+- **Solusi:** setiap page directory baru diberi recursive entry ke dirinya sendiri. Saat membuat dan menghapus process, page directory process diaktifkan sementara lalu dikembalikan.
+
+#### Masalah 4: `&` dan `|` tidak bisa diketik
+- **Deskripsi:** driver keyboard awal tidak membaca Shift, sehingga `clock &` dan pipeline tidak dapat diketik.
+- **Solusi:** driver keyboard melacak Shift, Ctrl, dan Caps Lock. Ctrl+C ditandai sebagai permintaan menghentikan foreground process.
+
+#### Masalah 5: Pointer syscall rusak membuat seluruh OS berhenti
+- **Deskripsi:** pointer user yang belum dipetakan lolos dari `is_user_range()` dan memicu page fault di mode kernel, yang sebelumnya selalu dianggap fatal.
+- **Solusi:** page fault di mode kernel pada alamat di bawah `0xC0000000` dianggap kesalahan process pemanggil, sehingga hanya process itu yang dihentikan.
+
+#### Masalah 6: Sistem kosong setelah shell di-`kill`
+- **Deskripsi:** jika init process dihentikan, tidak ada lagi yang dapat menerima input.
+- **Solusi:** scheduler memeriksa `init_pid`. Bila shell sudah tidak ada, shell dibuat kembali.
+
+### 3. Hasil Pengujian
+
+Pengujian dilakukan di QEMU (`qemu-system-i386`) secara otomatis: input dikirim lewat QMP `sendkey` dan isi layar dibaca dari memori VGA `0xB8000`.
+
+| No | Kasus Uji | Hasil yang Diharapkan | Status |
+|:---|:---|:---|:---:|
+| 1 | Boot, shell sebagai init process, dibiarkan berjalan lebih dari 60 detik | Shell responsif, tidak ada error | **PASS** |
+| 2 | `hello`, `exec hello Ghani Budi`, `exec /bin/hello` | Hello World! dan sapaan per argumen | **PASS** |
+| 3 | `clock &`, `ps`, `kill <pid>`, lalu `exec clock &` lagi | Jam berjalan, hilang dari `ps` setelah di-kill, dapat dijalankan ulang | **PASS** |
+| 4 | `clock` di foreground lalu Ctrl+C | Shell menunggu, Ctrl+C menghentikan clock dan prompt kembali | **PASS** |
+| 5 | 34 kali `hello` berturut-turut | Jumlah frame bebas kembali ke nilai awal (tidak bocor) | **PASS** |
+| 6 | Menjalankan 16 process | Process ke-17 ditolak dengan pesan error, sistem tetap berjalan | **PASS** |
+| 7 | `kill 1` (shell) | Shell baru otomatis dibuat | **PASS** |
+| 8 | Program crash: akses memori kernel, `cli`, stack overflow, bagi nol, pointer syscall tidak valid | Hanya program tersebut yang dihentikan | **PASS** |
+| 9 | `exec readme.txt` (bukan executable) | Process dihentikan dengan pesan fault, shell tetap berjalan | **PASS** |
+| 10 | `export /apps:/bin`, reboot, `env` | PATH tetap `/apps:/bin` setelah reboot | **PASS** |
+| 11 | `ls /bin`, `ls ../bin`, `cp`, `mv`, `rm`, `find`, `echo` sambil `clock &` berjalan | Semua operasi berhasil, jam tetap berdetak | **PASS** |
+
+### 4. Distribusi Tugas (berdasarkan riwayat commit)
+
+| Nama Anggota | NIM | Kontribusi |
+|:---|:---:|:---|
+| **Nabil Rabbani** | 13525004 | Milestone 0–1: kernel skeleton, GDT, framebuffer, interrupt, keyboard driver |
+| **Raditya Wibian Sastaka** | 13525019 | Milestone 3: higher-half paging, page frame manager, TSS, syscall `int 0x30`, shell ring 3, inserter |
+| **Mochammad Nuha Al Ghifari** | 13525056 | Milestone 4: ring buffer keyboard, perbaikan EXT2 & framebuffer, argumen `ls`/`cd`/`cp`/`mv`, `export PATH=`, posisi `clock`, aplikasi `echo` |
+| **Ghaniyul Amri Caulava** | 13525106 | Milestone 2: EXT2. Milestone 4: koreksi kit, process & PCB, scheduler & context switch, syscall `exit`/`exec`/`kill`/`ps`, CMOS & `clock`, `hello`, penanganan fault, README |
+
+### 5. Kesimpulan
+
+mbOSok memenuhi seluruh spesifikasi wajib Chapter 0 sampai Chapter 4: kernel dapat menjalankan banyak program user secara bersamaan dengan isolasi memori per process dan penjadwalan preemptive Round Robin, ditambah bonus PATH persisten dan command terpisah dari shell.

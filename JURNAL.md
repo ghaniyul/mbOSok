@@ -42,7 +42,7 @@ Pada Milestone 2 ini, kelompok telah menyelesaikan seluruh spesifikasi **Chapter
    - `delete`: Menghapus file atau direktori kosong, melakukan dealokasi blok data, blok penunjuk indirection, serta membebaskan bit pada Block Bitmap dan Inode Bitmap.
 6. **Inisialisasi & Verifikasi Otomatis**:
    - `is_empty_storage`: Memverifikasi signature boot sector `fs_signature`.
-   - `create_ext2`: Menginisialisasi disk kosong dengan menulis signature, superblock, tabel BGD, bitmap kosong, dan root directory (inode 2).
+   - `create_ext2`: Menginisialisasi disk kosong dengan menulis signature, superblock, tabel BGD, bitmap kosong, dan root directory (inode 1).
    - `initialize_filesystem_ext2`: Melakukan auto-format jika disk kosong, atau memuat metadata dari disk jika sudah ada.
 
 ---
@@ -104,7 +104,7 @@ Pada Milestone 2 ini, kelompok telah menyelesaikan seluruh spesifikasi **Chapter
 - **Analisis:** Sebelum menghapus inode bertipe direktori, isi tabel direktori harus diperiksa.
 - **Penyelesaian:**
   - Ditambahkan fungsi validasi yang memindai seluruh entri pada blok direktori target. Jika ditemukan entri selain `.` dan `..`, fungsi `delete()` mengembalikan kode error `2` (folder not empty).
-  - Ditambahkan pemeriksaan `request.parent_inode == 2 && strcmp(request.name, "..") == 0` untuk mencegah penghapusan root directory.
+  - `delete()` menolak nama `.` dan `..` serta entri yang menunjuk root directory (inode 1), sehingga root directory tidak bisa dihapus.
 
 ---
 
